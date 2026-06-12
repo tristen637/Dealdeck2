@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-const MODEL = "claude-sonnet-4-20250514";
+const MODEL = "claude-sonnet-4-5";
 const SCORE_STYLES = {
   "Strong Buy": { bg: "#ECFDF5", border: "#6EE7B7", text: "#065F46", icon: "🔥" },
   "Good Deal":  { bg: "#EFF6FF", border: "#93C5FD", text: "#1E40AF", icon: "✅" },
