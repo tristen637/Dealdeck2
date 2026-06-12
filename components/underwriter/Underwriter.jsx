@@ -51,7 +51,6 @@ const res = await fetch("/api/underwrite", {
       if (start === -1 || end === -1) throw new Error("No JSON in response");
       return JSON.parse(clean.slice(start, end + 1));
     }
-}
 // ─── UI Primitives ────────────────────────────────────────────────────────────
 function Spinner() {
   return (
