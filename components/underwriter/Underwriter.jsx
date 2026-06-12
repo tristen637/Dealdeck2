@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-const MODEL = "claude-sonnet-4-5";
+const MODEL = "claude-sonnet-4-20250514";
 const SCORE_STYLES = {
   "Strong Buy": { bg: "#ECFDF5", border: "#6EE7B7", text: "#065F46", icon: "🔥" },
   "Good Deal":  { bg: "#EFF6FF", border: "#93C5FD", text: "#1E40AF", icon: "✅" },
@@ -24,6 +24,7 @@ async function toBase64(file) {
     r.readAsDataURL(file);
   });
 }
+
 async function callAI(prompt, files = []) {
   const content = [{ type: "text", text: prompt }];
   for (const file of files) {
@@ -34,23 +35,22 @@ async function callAI(prompt, files = []) {
       content.push({ type: "image", source: { type: "base64", media_type: file.type, data } });
     }
   }
-const res = await fetch("/api/underwrite", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: [{ role: "user", content }] }),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "API error " + res.status);
-      }
-      const json = await res.json();
-      const text = (json.content || []).map((b) => b.text || "").join("");
-      const clean = text.replace(/```json|```/g, "").trim();
-      const start = clean.indexOf("{");
-      const end = clean.lastIndexOf("}");
-      if (start === -1 || end === -1) throw new Error("No JSON in response");
-      return JSON.parse(clean.slice(start, end + 1));
-    }
+  const res = await fetch("/api/underwrite", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages: [{ role: "user", content }] }),
+  });
+  if (!res.ok) throw new Error("API error " + res.status);
+  const json = await res.json();
+  const text = (json.content || []).map((b) => b.text || "").join("");
+  const clean = text.replace(/```json|```/g, "").trim();
+  // Find JSON object in response
+  const start = clean.indexOf("{");
+  const end = clean.lastIndexOf("}");
+  if (start === -1 || end === -1) throw new Error("No JSON in response");
+  return JSON.parse(clean.slice(start, end + 1));
+}
+
 // ─── UI Primitives ────────────────────────────────────────────────────────────
 function Spinner() {
   return (
