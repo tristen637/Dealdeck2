@@ -51,10 +51,11 @@ export async function POST(req: NextRequest) {
 
     const { messages } = await req.json()
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5',
-      max_tokens: 1500,
-      messages,
-    })
+  model: 'claude-sonnet-4-5',
+  max_tokens: 1500,
+  system: 'You are a real estate investment analyst. Always respond with valid JSON only. No markdown, no backticks, no explanation. Just the raw JSON object.',
+  messages,
+})
 
     return NextResponse.json({ content: response.content })
   } catch (err: any) {
