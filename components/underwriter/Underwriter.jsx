@@ -915,6 +915,169 @@ dealScore must be exactly one of: Strong Buy, Good Deal, Marginal, Pass`;
     </div>
   );
 }
+// ─── Seller Finance Analyzer ─────────────────────────────────────────────────
+function calcPayment(principal, annualRate, termYears) {
+  if (!principal || !termYears) return 0;
+  if (annualRate === 0) return principal / (termYears * 12);
+  const r = annualRate / 100 / 12;
+  const n = termYears * 12;
+  return principal * (r * Math.pow(1+r,n)) / (Math.pow(1+r,n)-1);
+}
+function remainingBal(principal, annualRate, termYears, yearsElapsed) {
+  if (!principal || !termYears) return 0;
+  const mo = yearsElapsed * 12;
+  if (annualRate === 0) return Math.max(0, principal - (principal / (termYears * 12)) * mo);
+  const r = annualRate / 100 / 12;
+  const n = termYears * 12;
+  const pmt = principal * (r * Math.pow(1+r,n)) / (Math.pow(1+r,n)-1);
+  return principal * Math.pow(1+r, mo) - pmt * (Math.pow(1+r,mo)-1)/r;
+}
+function SellerFinanceForm() {
+  const [f, setF] = useState({ address:"", purchasePrice:"", arv:"", rehabCost:"", closingCosts:"5000", firstLoan:"", firstRate:"7.5", firstTerm:"30", carryAmt:"", carryRate:"5", carryTerm:"30", balloonYears:"5", carryIO:false, grossRentMo:"", vacancyRate:"8", expenseRatio:"40", exitCapRate:"8", exitLTV:"70" });
+  const [loading, setLoading] = useState(false);
+  const [aiResult, setAiResult] = useState(null);
+  const [error, setError] = useState("");
+  const set = (k) => (v) => setF((p) => ({ ...p, [k]: v }));
+  const tog = (k) => () => setF((p) => ({ ...p, [k]: !p[k] }));
+  const purchase=num(f.purchasePrice),arv=num(f.arv),rehab=num(f.rehabCost),closing=num(f.closingCosts);
+  const firstLoan=num(f.firstLoan),firstRate=num(f.firstRate),firstTerm=num(f.firstTerm);
+  const carryAmt=num(f.carryAmt),carryRate=num(f.carryRate),carryTerm=num(f.carryTerm),balloon=num(f.balloonYears);
+  const grossRentMo=num(f.grossRentMo),vacancy=num(f.vacancyRate)/100,expRatio=num(f.expenseRatio)/100;
+  const firstPayment=calcPayment(firstLoan,firstRate,firstTerm);
+  const carryPayment=f.carryIO?(carryAmt*carryRate/100/12):calcPayment(carryAmt,carryRate,carryTerm);
+  const totalMonthlyDebt=firstPayment+carryPayment,annualDebt=totalMonthlyDebt*12;
+  const totalUses=purchase+rehab+closing,totalSources=firstLoan+carryAmt;
+  const equityIn=Math.max(0,totalUses-totalSources),surplusAtClose=totalSources-totalUses;
+  const valueLift=arv>purchase?arv-purchase:0;
+  const effectiveRentYr=grossRentMo*12*(1-vacancy),expenses=effectiveRentYr*expRatio,noi=effectiveRentYr-expenses;
+  const annualCashFlow=noi-annualDebt,monthlyCashFlow=annualCashFlow/12;
+  const dscr=annualDebt>0?noi/annualDebt:0,coc=equityIn>0?annualCashFlow/equityIn:null;
+  const exitCap=num(f.exitCapRate)/100,exitLTV=num(f.exitLTV)/100;
+  const propVal=exitCap>0?noi/exitCap:0,refiAvail=propVal*exitLTV;
+  const firstRem=remainingBal(firstLoan,firstRate,firstTerm,balloon);
+  const carryRem=f.carryIO?carryAmt:remainingBal(carryAmt,carryRate,carryTerm,balloon);
+  const debtToRetire=firstRem+carryRem,refiSurplus=refiAvail-debtToRetire;
+  const refiPasses=refiSurplus>=0,dscrOk=dscr>=1.2;
+
+  async function analyze() {
+    if (!f.purchasePrice||!f.grossRentMo){setError("Enter purchase price and monthly rent first.");return;}
+    setError("");setLoading(true);
+    try {
+      const prompt=`You are a creative real estate finance analyst. Analyze this seller finance deal.\n\nDEAL:\n- Address: ${f.address||"N/A"}\n- Purchase: $${purchase.toLocaleString()} | ARV: $${arv.toLocaleString()}\n- Total Uses: $${totalUses.toLocaleString()} | Sources: $${totalSources.toLocaleString()}\n- Equity In: $${equityIn.toLocaleString()} | Surplus at Close: $${surplusAtClose.toLocaleString()}\n- First Mortgage: $${firstLoan.toLocaleString()} @ ${firstRate}% = $${Math.round(firstPayment)}/mo\n- Seller Carry: $${carryAmt.toLocaleString()} @ ${carryRate}% ${f.carryIO?"IO":""} balloon ${balloon}yr = $${Math.round(carryPayment)}/mo\n- NOI: $${Math.round(noi).toLocaleString()}/yr | Cash Flow: $${Math.round(monthlyCashFlow)}/mo\n- DSCR: ${dscr.toFixed(2)}x (target >= 1.20)\n- Refi at Balloon: Value $${Math.round(propVal).toLocaleString()}, Available $${Math.round(refiAvail).toLocaleString()}, Debt $${Math.round(debtToRetire).toLocaleString()}, Surplus $${Math.round(refiSurplus).toLocaleString()}\n- Refi Screen: ${refiPasses?"PASSES":"FAILS"}\n\nReply ONLY with valid JSON, no markdown:\n{"dealScore":"Strong Buy or Good Deal or Marginal or Pass","verdict":"3-4 sentences on deal quality, DSCR, and refi risk","risks":"- risk1\\n- risk2\\n- risk3","upside":"- up1\\n- up2\\n- up3","negotiationTip":"one specific tip"}`;
+      const res=await fetch("/api/underwrite",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({messages:[{role:"user",content:[{type:"text",text:prompt}]}]})});
+      if(!res.ok){const e=await res.json();throw new Error(e.error||"error");}
+      const json=await res.json();
+      const text=(json.content||[]).map((b)=>b.text||"").join("");
+      let depth=0,s=-1,e2=-1;
+      for(let i=0;i<text.length;i++){if(text[i]==="{"){if(depth===0)s=i;depth++;}else if(text[i]==="}"){depth--;if(depth===0){e2=i;break;}}}
+      setAiResult(JSON.parse(text.slice(s,e2+1)));
+    }catch(e){setError("Analysis failed: "+e.message);}
+    setLoading(false);
+  }
+
+  const card={background:"#fff",border:"1px solid #E5E7EB",borderRadius:14,padding:16,marginBottom:12};
+  const sec={fontSize:12,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10,paddingBottom:6,borderBottom:"2px solid #F3F4F6"};
+  const grid={display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10};
+
+  return (
+    <div>
+      <div style={card}>
+        <div style={sec}>Property</div>
+        <div style={grid}>
+          <Field label="Address" full><input value={f.address} onChange={(e)=>set("address")(e.target.value)} placeholder="123 Main St" style={{...inputStyle,width:"100%",boxSizing:"border-box"}} /></Field>
+          <Field label="Purchase Price"><NumInput value={f.purchasePrice} onChange={set("purchasePrice")} prefix="$" placeholder="275000" /></Field>
+          <Field label="ARV"><NumInput value={f.arv} onChange={set("arv")} prefix="$" placeholder="450000" /></Field>
+          <Field label="Rehab Cost"><NumInput value={f.rehabCost} onChange={set("rehabCost")} prefix="$" placeholder="50000" /></Field>
+          <Field label="Closing Costs"><NumInput value={f.closingCosts} onChange={set("closingCosts")} prefix="$" /></Field>
+        </div>
+      </div>
+      <div style={card}>
+        <div style={sec}>First Mortgage</div>
+        <div style={grid}>
+          <Field label="Loan Amount"><NumInput value={f.firstLoan} onChange={set("firstLoan")} prefix="$" placeholder="560000" /></Field>
+          <Field label="Interest Rate"><NumInput value={f.firstRate} onChange={set("firstRate")} suffix="%" /></Field>
+          <Field label="Term"><NumInput value={f.firstTerm} onChange={set("firstTerm")} suffix="yrs" /></Field>
+          <Field label="Monthly Payment"><div style={{...inputStyle,background:"#F3F4F6",display:"flex",alignItems:"center"}}>{f$(firstPayment)}/mo</div></Field>
+        </div>
+      </div>
+      <div style={card}>
+        <div style={sec}>Seller Carry</div>
+        <div style={grid}>
+          <Field label="Carry Amount"><NumInput value={f.carryAmt} onChange={set("carryAmt")} prefix="$" placeholder="220000" /></Field>
+          <Field label="Interest Rate"><NumInput value={f.carryRate} onChange={set("carryRate")} suffix="%" /></Field>
+          <Field label="Balloon (years)"><NumInput value={f.balloonYears} onChange={set("balloonYears")} suffix="yrs" /></Field>
+          <Field label="Carry Term"><NumInput value={f.carryTerm} onChange={set("carryTerm")} suffix="yrs" /></Field>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <button onClick={tog("carryIO")} style={{padding:"4px 12px",borderRadius:20,border:"1px solid "+(f.carryIO?"#10B981":"#E5E7EB"),background:f.carryIO?"#ECFDF5":"#fff",color:f.carryIO?"#065F46":"#6B7280",fontSize:12,fontWeight:600,cursor:"pointer"}}>{f.carryIO?"✓ Interest Only":"Interest Only"}</button>
+          <span style={{fontSize:12,color:"#9CA3AF"}}>Payment: {f$(carryPayment)}/mo</span>
+        </div>
+      </div>
+      <div style={card}>
+        <div style={sec}>Income & Expenses</div>
+        <div style={grid}>
+          <Field label="Gross Rent/Mo"><NumInput value={f.grossRentMo} onChange={set("grossRentMo")} prefix="$" placeholder="6000" /></Field>
+          <Field label="Vacancy Rate"><NumInput value={f.vacancyRate} onChange={set("vacancyRate")} suffix="%" /></Field>
+          <Field label="Expense Ratio"><NumInput value={f.expenseRatio} onChange={set("expenseRatio")} suffix="%" /></Field>
+        </div>
+      </div>
+      <div style={card}>
+        <div style={sec}>Refi Screen at Balloon</div>
+        <div style={grid}>
+          <Field label="Exit Cap Rate"><NumInput value={f.exitCapRate} onChange={set("exitCapRate")} suffix="%" /></Field>
+          <Field label="Refi LTV"><NumInput value={f.exitLTV} onChange={set("exitLTV")} suffix="%" /></Field>
+        </div>
+      </div>
+      {purchase>0&&grossRentMo>0&&(
+        <div style={card}>
+          <div style={sec}>Results</div>
+          <div style={{background:"#F9FAFB",borderRadius:10,padding:12,marginBottom:12}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>Funding the Close</div>
+            {[["Total Uses (price + rehab + costs)",f$(totalUses),"#374151"],["Total Sources (loans + carry)",f$(totalSources),"#374151"],["Surplus at Close",f$(surplusAtClose),surplusAtClose>=0?"#065F46":"#991B1B"],["Value Lift from Improvements",f$(valueLift),"#6D28D9"]].map(([label,val,color])=>(
+              <div key={label} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px solid #E5E7EB"}}>
+                <span style={{fontSize:13,color:"#6B7280"}}>{label}</span>
+                <span style={{fontSize:13,fontWeight:700,color}}>{val}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+            <MetricBox label="Cash Flow / Mo" value={f$(monthlyCashFlow)} color={monthlyCashFlow>0?"#065F46":"#991B1B"} bg={monthlyCashFlow>0?"#ECFDF5":"#FEF2F2"} />
+            <MetricBox label="DSCR" value={fX(dscr)} sub="target ≥ 1.20" color={dscrOk?"#065F46":"#991B1B"} bg={dscrOk?"#ECFDF5":"#FEF2F2"} />
+            <MetricBox label="NOI / Year" value={f$(noi)} color="#374151" />
+            <MetricBox label="Annual Debt Service" value={f$(annualDebt)} color="#374151" />
+            {coc!==null&&<MetricBox label="Cash-on-Cash" value={fPct(coc)} color={coc>0.08?"#065F46":"#92400E"} bg="#FFFBEB" />}
+            <MetricBox label="Equity In" value={equityIn===0?"None ✓":f$(equityIn)} color={equityIn===0?"#065F46":"#374151"} bg={equityIn===0?"#ECFDF5":"#F9FAFB"} />
+          </div>
+          <div style={{background:refiPasses?"#ECFDF5":"#FEF2F2",border:"1px solid "+(refiPasses?"#6EE7B7":"#FCA5A5"),borderRadius:12,padding:12,marginBottom:8}}>
+            <div style={{fontWeight:700,fontSize:13,color:refiPasses?"#065F46":"#991B1B",marginBottom:8}}>{refiPasses?"● PASSES SCREEN — in the ballpark":"● FAILS SCREEN — shortfall at balloon"}</div>
+            {[["Property Value (NOI ÷ cap)",f$(propVal)],["Refi Available (× LTV)",f$(refiAvail)],["Debt to Retire (1st + carry)",f$(debtToRetire)],["Surplus / (Shortfall)",f$(refiSurplus)]].map(([label,val])=>(
+              <div key={label} style={{display:"flex",justifyContent:"space-between",padding:"3px 0"}}>
+                <span style={{fontSize:12,color:refiPasses?"#14532D":"#7F1D1D"}}>{label}</span>
+                <span style={{fontSize:12,fontWeight:700,color:refiPasses?"#065F46":"#991B1B"}}>{val}</span>
+              </div>
+            ))}
+            <div style={{fontSize:11,color:"#6B7280",marginTop:8,fontStyle:"italic"}}>Rough screen only. Does not check seasoning, lease-up, or refi costs. "Passes" = worth a closer look.</div>
+          </div>
+        </div>
+      )}
+      {error&&<div style={{background:"#FEF2F2",color:"#991B1B",borderRadius:8,padding:"8px 12px",fontSize:13,marginBottom:8}}>{error}</div>}
+      <button onClick={analyze} disabled={loading} style={{width:"100%",padding:14,borderRadius:12,border:"none",background:loading?"#6B7280":"#111827",color:"#fff",fontSize:15,fontWeight:700,cursor:loading?"not-allowed":"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginBottom:12}}>
+        {loading?<><Spinner /> Analyzing…</>:"⚡ AI Deal Analysis"}
+      </button>
+      {aiResult&&(
+        <div>
+          <Verdict score={aiResult.dealScore} text={aiResult.verdict} />
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+            {aiResult.risks&&<div style={{background:"#FEF2F2",border:"1px solid #FCA5A5",borderRadius:12,padding:12}}><div style={{fontWeight:700,fontSize:12,color:"#991B1B",marginBottom:6}}>⚠️ Risks</div><div style={{fontSize:12,color:"#7F1D1D",lineHeight:1.65,whiteSpace:"pre-wrap"}}>{aiResult.risks}</div></div>}
+            {aiResult.upside&&<div style={{background:"#ECFDF5",border:"1px solid #6EE7B7",borderRadius:12,padding:12}}><div style={{fontWeight:700,fontSize:12,color:"#065F46",marginBottom:6}}>📈 Upside</div><div style={{fontSize:12,color:"#14532D",lineHeight:1.65,whiteSpace:"pre-wrap"}}>{aiResult.upside}</div></div>}
+          </div>
+          {aiResult.negotiationTip&&<div style={{background:"#FFFBEB",border:"1px solid #FDE68A",borderRadius:12,padding:12}}><div style={{fontWeight:700,fontSize:12,color:"#92400E",marginBottom:4}}>💡 Negotiation Tip</div><div style={{fontSize:13,color:"#78350F"}}>{aiResult.negotiationTip}</div></div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SavedDeals({ deals, onDelete }) {
   const [open, setOpen] = useState(null);
   if (deals.length === 0) return (
@@ -997,7 +1160,7 @@ export default function App() {
         </div>
         <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 12 }}>SFH & Multifamily · Know before you buy</div>
         <div style={{ display: "flex", borderTop: "1px solid #1F2937" }}>
-          {[["underwrite","Underwrite"],["wholesale","Wholesale"],["mhp","MHP"],["saved","Saved (" + saved.length + ")"]].map(([k,l]) => (
+          {[["underwrite","Underwrite"],["seller","Seller Finance"],["wholesale","Wholesale"],["mhp","MHP"],["saved","Saved (" + saved.length + ")"]].map(([k,l]) => (
             <button key={k} onClick={() => { setTab(k); if (k === "underwrite") setMode("home"); }} style={{ flex: 1, background: "none", border: "none", padding: "10px 0", fontSize: 13, fontWeight: 600, cursor: "pointer", color: tab === k ? "#10B981" : "#6B7280", borderBottom: tab === k ? "2px solid #10B981" : "2px solid transparent" }}>{l}</button>
           ))}
         </div>
@@ -1055,6 +1218,13 @@ export default function App() {
             <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>🏷️ Wholesale Calculator</div>
             <div style={{ fontSize: 12, color: "#9CA3AF", marginBottom: 14 }}>Figure out your max offer, assignment fee, and whether the deal is worth pursuing.</div>
             <WholesaleCalc />
+          </div>
+        )}
+        {tab === "seller" && (
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 2 }}>🤝 Seller Finance Analyzer</div>
+            <div style={{ fontSize: 12, color: "#9CA3AF", marginBottom: 14 }}>Creative finance deals — seller carry, refi screen at balloon, and cash flow analysis.</div>
+            <SellerFinanceForm />
           </div>
         )}
         {tab === "saved" && <SavedDeals deals={saved} onDelete={(id) => setSaved((s) => s.filter((d) => d.id !== id))} />}
