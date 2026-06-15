@@ -4,7 +4,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase'
 import dynamic from 'next/dynamic'
 
-const Underwriter = dynamic(() => import('@/components/underwriter/Underwriter'), { ssr: false })
+const Underwriter = dynamic(() => import('@/components/underwriter/Underwriter?v=2'), { ssr: false })
 
 const ADMIN_EMAIL = process.env.NEXT_PUBLIC_ADMIN_EMAIL || ''
 
